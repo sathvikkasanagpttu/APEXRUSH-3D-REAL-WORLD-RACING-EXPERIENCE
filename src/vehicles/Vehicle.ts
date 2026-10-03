@@ -83,6 +83,12 @@ export class Vehicle {
 
   reset(pos: THREE.Vector3, rotY: number) {
     this.physics.reset(pos, rotY);
+    this.currentSteerAngle = 0;
+    this.wheelSpinAngle = 0;
     this.updateTransform();
+  }
+
+  dispose() {
+    this.model.materials.forEach(mat => mat.dispose());
   }
 }

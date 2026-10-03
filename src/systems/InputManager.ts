@@ -24,10 +24,11 @@ export class InputManager {
   constructor() {
     window.addEventListener('keydown', this.handleKeyDown);
     window.addEventListener('keyup', this.handleKeyUp);
+    window.addEventListener('blur', this.handleBlur);
   }
 
   private handleKeyDown = (e: KeyboardEvent) => {
-    // Prevent default scrolling on arrow keys and space so the browser doesn't jump
+    // Prevent default scrolling on arrow keys and space so browser does not jump
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code) || e.key === ' ') {
       e.preventDefault();
     }
@@ -37,14 +38,17 @@ export class InputManager {
       this.keys[e.key.toLowerCase()] = true;
     }
 
-    if ((e.code === 'KeyR' || e.key === 'r' || e.key === 'R') && this.onReset) {
-      this.onReset();
-    }
-    if ((e.code === 'Escape' || e.key === 'Escape') && this.onPause) {
-      this.onPause();
-    }
-    if ((e.code === 'KeyC' || e.key === 'c' || e.key === 'C') && this.onCameraToggle) {
-      this.onCameraToggle();
+    // Trigger one-shot control callbacks without repeat spam
+    if (!e.repeat) {
+      if ((e.code === 'KeyR' || e.key === 'r' || e.key === 'R') && this.onReset) {
+        this.onReset();
+      }
+      if ((e.code === 'Escape' || e.key === 'Escape') && this.onPause) {
+        this.onPause();
+      }
+      if ((e.code === 'KeyC' || e.key === 'c' || e.key === 'C') && this.onCameraToggle) {
+        this.onCameraToggle();
+      }
     }
   };
 
@@ -55,21 +59,35 @@ export class InputManager {
     }
   };
 
+  private handleBlur = () => {
+    // Clear all held keys if window loses focus to prevent stuck keys
+    this.keys = {};
+    this.resetTouchInputs();
+  };
+
+  public resetTouchInputs() {
+    this.touchThrottle = 0;
+    this.touchBrake = 0;
+    this.touchSteer = 0;
+    this.touchHandbrake = false;
+    this.touchBoost = false;
+  }
+
   update() {
     // Keyboard reading with case-insensitive and code fallbacks
-    const isW = this.keys['KeyW'] || this.keys['ArrowUp'] || this.keys['w'];
-    const isS = this.keys['KeyS'] || this.keys['ArrowDown'] || this.keys['s'];
-    const isA = this.keys['KeyA'] || this.keys['ArrowLeft'] || this.keys['a'];
-    const isD = this.keys['KeyD'] || this.keys['ArrowRight'] || this.keys['d'];
-    const isSpace = this.keys['Space'] || this.keys[' '];
-    const isShift = this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.keys['shift'];
+    const isW = !!(this.keys['KeyW'] || this.keys['ArrowUp'] || this.keys['w']);
+    const isS = !!(this.keys['KeyS'] || this.keys['ArrowDown'] || this.keys['s']);
+    const isA = !!(this.keys['KeyA'] || this.keys['ArrowLeft'] || this.keys['a']);
+    const isD = !!(this.keys['KeyD'] || this.keys['ArrowRight'] || this.keys['d']);
+    const isSpace = !!(this.keys['Space'] || this.keys[' ']);
+    const isShift = !!(this.keys['ShiftLeft'] || this.keys['ShiftRight'] || this.keys['shift']);
 
     // Combine keyboard and touch
     const kbThrottle = isW ? 1 : 0;
     const kbBrake = isS ? 1 : 0;
     const kbSteer = (isA ? -1 : 0) + (isD ? 1 : 0);
-    const kbHandbrake = !!isSpace;
-    const kbBoost = !!isShift;
+    const kbHandbrake = isSpace;
+    const kbBoost = isShift;
 
     this.inputs.throttle = Math.max(kbThrottle, this.touchThrottle);
     this.inputs.brake = Math.max(kbBrake, this.touchBrake);
@@ -81,5 +99,8 @@ export class InputManager {
   destroy() {
     window.removeEventListener('keydown', this.handleKeyDown);
     window.removeEventListener('keyup', this.handleKeyUp);
+    window.removeEventListener('blur', this.handleBlur);
+    this.keys = {};
+    this.resetTouchInputs();
   }
 }

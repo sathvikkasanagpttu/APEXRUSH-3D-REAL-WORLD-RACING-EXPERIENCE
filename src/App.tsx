@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import { RacingCanvas } from './components/RacingCanvas';
 import { GameEngine } from './game/GameEngine';
 import { LoadingScreen } from './components/LoadingScreen';
@@ -14,7 +14,6 @@ import { HowToPlayModal } from './components/HowToPlayModal';
 import { TouchControls } from './components/TouchControls';
 import { CameraMode, GameMode, GameState, TrackConfig } from './data/gameTypes';
 import { CHAMPIONSHIP_RACES, ChampionshipRace } from './data/championshipData';
-import { audio } from './audio/AudioEngine';
 
 export const App: React.FC = () => {
   const [engine, setEngine] = useState<GameEngine | null>(null);
@@ -76,12 +75,13 @@ export const App: React.FC = () => {
       }
     };
 
+    // Reliable car reset (Req 9)
     eng.input.onReset = () => {
       if (eng.raceManager.gameState === 'RACING' || eng.raceManager.gameState === 'COUNTDOWN') {
         const cp = eng.track.checkpoints[eng.raceManager.currentCheckpointIndex] || eng.track.checkpoints[0];
         const rotY = Math.atan2(cp.direction.x, cp.direction.z);
         const resetPos = cp.position.clone();
-        resetPos.y += 0.05;
+        resetPos.y += 0.1;
         eng.playerVehicle.reset(resetPos, rotY);
         eng.cameraSystem.snapToVehicle(eng.playerVehicle);
         eng.raceManager.addNotification('VEHICLE RESET', 'RETURNED TO TRACK', '#ffaa00');
@@ -110,12 +110,21 @@ export const App: React.FC = () => {
     if (gameMode === 'CHAMPIONSHIP') {
       const currentRace = CHAMPIONSHIP_RACES.find(r => r.id === currentTrackConfig.id);
       if (currentRace && currentRace.stage === unlockedStage && telemetry.position <= 3) {
-        setUnlockedStage(prev => Math.min(5, prev + 1));
+        const nextStage = Math.min(5, unlockedStage + 1);
+        setUnlockedStage(nextStage);
         setCareerPoints(prev => prev + currentRace.rewardPoints);
+
+        const nextRace = CHAMPIONSHIP_RACES.find(r => r.stage === nextStage);
+        if (nextRace && nextStage <= 5) {
+          startRaceWithConfig(nextRace, 'CHAMPIONSHIP');
+          return;
+        }
       }
       setGameState('CHAMPIONSHIP');
+      if (engine) engine.raceManager.gameState = 'CHAMPIONSHIP';
     } else {
       setGameState('TRACK_SELECT');
+      if (engine) engine.raceManager.gameState = 'TRACK_SELECT';
     }
   };
 
@@ -124,7 +133,7 @@ export const App: React.FC = () => {
       {/* 3D WebGL Canvas always rendering */}
       <RacingCanvas onEngineReady={handleEngineReady} />
 
-      {/* Screen States */}
+      {/* Screen States (Req 27) */}
       {gameState === 'LOADING' && (
         <LoadingScreen
           onStart={() => {
@@ -141,8 +150,14 @@ export const App: React.FC = () => {
             setGameState('GARAGE');
             if (engine) engine.raceManager.gameState = 'GARAGE';
           }}
-          onOpenTrackSelect={() => setGameState('TRACK_SELECT')}
-          onOpenChampionship={() => setGameState('CHAMPIONSHIP')}
+          onOpenTrackSelect={() => {
+            setGameState('TRACK_SELECT');
+            if (engine) engine.raceManager.gameState = 'TRACK_SELECT';
+          }}
+          onOpenChampionship={() => {
+            setGameState('CHAMPIONSHIP');
+            if (engine) engine.raceManager.gameState = 'CHAMPIONSHIP';
+          }}
           onOpenSettings={() => setShowSettings(true)}
           onOpenHowToPlay={() => setShowHowToPlay(true)}
         />
@@ -162,7 +177,10 @@ export const App: React.FC = () => {
       {gameState === 'TRACK_SELECT' && (
         <TrackSelect
           onStartTrack={(config, mode) => startRaceWithConfig(config, mode)}
-          onBack={() => setGameState('MENU')}
+          onBack={() => {
+            setGameState('MENU');
+            if (engine) engine.raceManager.gameState = 'MENU';
+          }}
         />
       )}
 
@@ -171,7 +189,10 @@ export const App: React.FC = () => {
           unlockedStage={unlockedStage}
           totalPoints={careerPoints}
           onStartRace={handleChampionshipRace}
-          onBack={() => setGameState('MENU')}
+          onBack={() => {
+            setGameState('MENU');
+            if (engine) engine.raceManager.gameState = 'MENU';
+          }}
         />
       )}
 

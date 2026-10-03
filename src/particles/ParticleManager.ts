@@ -14,22 +14,26 @@ interface Particle {
 
 export class ParticleManager {
   private particles: Particle[] = [];
-  private maxParticles = 600;
+  private readonly maxParticles = 600;
   private instancedMesh: THREE.InstancedMesh;
   private dummy = new THREE.Object3D();
   private colorArray: Float32Array;
+  private scene: THREE.Scene;
+  private geometry: THREE.PlaneGeometry;
+  private material: THREE.MeshBasicMaterial;
 
   constructor(scene: THREE.Scene) {
-    const geo = new THREE.PlaneGeometry(0.5, 0.5);
-    const mat = new THREE.MeshBasicMaterial({
+    this.scene = scene;
+    this.geometry = new THREE.PlaneGeometry(0.5, 0.5);
+    this.material = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       transparent: true,
-      opacity: 0.8,
+      opacity: 0.85,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
 
-    this.instancedMesh = new THREE.InstancedMesh(geo, mat, this.maxParticles);
+    this.instancedMesh = new THREE.InstancedMesh(this.geometry, this.material, this.maxParticles);
     this.instancedMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.colorArray = new Float32Array(this.maxParticles * 3);
     this.instancedMesh.instanceColor = new THREE.InstancedBufferAttribute(this.colorArray, 3);
@@ -83,16 +87,32 @@ export class ParticleManager {
     const vel = carVel.clone().multiplyScalar(0.2).add(
       new THREE.Vector3((Math.random() - 0.5) * 1.5, 0.8 + Math.random() * 0.8, (Math.random() - 0.5) * 1.5)
     );
-    this.emit(pos, vel, new THREE.Color(0.85, 0.85, 0.88), 0.4, 3.0, 0.7);
+    this.emit(pos, vel, new THREE.Color(0.85, 0.85, 0.88), 0.45, 3.2, 0.7);
   }
 
   emitExhaustFlame(pos: THREE.Vector3, carDir: THREE.Vector3) {
     const flameColors = [new THREE.Color(0x00d4ff), new THREE.Color(0xffaa00), new THREE.Color(0xff4400)];
     const col = flameColors[Math.floor(Math.random() * flameColors.length)];
-    const vel = carDir.clone().multiplyScalar(-6 - Math.random() * 4).add(
+    const vel = carDir.clone().multiplyScalar(-7 - Math.random() * 4).add(
       new THREE.Vector3((Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 0.5)
     );
     this.emit(pos, vel, col, 0.25, 1.2, 0.25);
+  }
+
+  emitBoost(pos: THREE.Vector3, carDir: THREE.Vector3) {
+    const boostColors = [new THREE.Color(0x00ffff), new THREE.Color(0x0088ff), new THREE.Color(0x55ffff)];
+    const col = boostColors[Math.floor(Math.random() * boostColors.length)];
+    const vel = carDir.clone().multiplyScalar(-9 - Math.random() * 5).add(
+      new THREE.Vector3((Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.8, (Math.random() - 0.5) * 0.8)
+    );
+    this.emit(pos, vel, col, 0.35, 1.8, 0.2);
+  }
+
+  emitDust(pos: THREE.Vector3, carVel: THREE.Vector3) {
+    const dustVel = carVel.clone().multiplyScalar(0.15).add(
+      new THREE.Vector3((Math.random() - 0.5) * 1.2, 0.5 + Math.random() * 0.5, (Math.random() - 0.5) * 1.2)
+    );
+    this.emit(pos, dustVel, new THREE.Color(0.45, 0.42, 0.38), 0.35, 2.0, 0.55);
   }
 
   emitSparks(pos: THREE.Vector3) {
@@ -107,6 +127,7 @@ export class ParticleManager {
   }
 
   update(delta: number, camera: THREE.Camera) {
+    let hasChanges = false;
     for (let i = 0; i < this.maxParticles; i++) {
       const p = this.particles[i];
       if (!p.active) continue;
@@ -118,14 +139,15 @@ export class ParticleManager {
         this.dummy.scale.set(0, 0, 0);
         this.dummy.updateMatrix();
         this.instancedMesh.setMatrixAt(i, this.dummy.matrix);
+        hasChanges = true;
         continue;
       }
 
-      // Physics
+      // Physics update
       p.position.addScaledVector(p.velocity, delta);
       p.scale += p.growth * delta;
       const progress = p.life / p.maxLife;
-      p.alpha = 1 - progress;
+      p.alpha = Math.max(0, 1 - progress);
 
       // Face camera (billboard)
       this.dummy.position.copy(p.position);
@@ -135,11 +157,33 @@ export class ParticleManager {
 
       this.instancedMesh.setMatrixAt(i, this.dummy.matrix);
       this.instancedMesh.setColorAt(i, p.color);
+      hasChanges = true;
     }
 
-    this.instancedMesh.instanceMatrix.needsUpdate = true;
-    if (this.instancedMesh.instanceColor) {
-      this.instancedMesh.instanceColor.needsUpdate = true;
+    if (hasChanges) {
+      this.instancedMesh.instanceMatrix.needsUpdate = true;
+      if (this.instancedMesh.instanceColor) {
+        this.instancedMesh.instanceColor.needsUpdate = true;
+      }
     }
+  }
+
+  reset() {
+    for (let i = 0; i < this.maxParticles; i++) {
+      this.particles[i].active = false;
+      this.dummy.position.set(0, -999, 0);
+      this.dummy.scale.set(0, 0, 0);
+      this.dummy.updateMatrix();
+      this.instancedMesh.setMatrixAt(i, this.dummy.matrix);
+    }
+    this.instancedMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  dispose() {
+    this.reset();
+    this.scene.remove(this.instancedMesh);
+    this.geometry.dispose();
+    this.material.dispose();
+    this.instancedMesh.dispose();
   }
 }

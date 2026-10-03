@@ -47,7 +47,7 @@ export class AIOpponent {
 
   constructor(profile: AIDriverProfile, startingU: number, startingOffset: number, curve: THREE.CatmullRomCurve3) {
     this.profile = profile;
-    this.progressU = startingU;
+    this.progressU = Math.max(0, Math.min(1, startingU));
     this.lateralOffset = startingOffset;
     this.targetOffset = startingOffset;
 
@@ -71,8 +71,10 @@ export class AIOpponent {
   }
 
   update(delta: number, curve: THREE.CatmullRomCurve3, trackLength: number, otherCarsPositions: THREE.Vector3[]) {
+    const dt = Math.max(0.001, Math.min(delta, 0.05));
+
     // 1. Evaluate curvature ahead (lookahead 35m)
-    const lookaheadU = (this.progressU + 35 / trackLength) % 1;
+    const lookaheadU = (this.progressU + 35 / Math.max(10, trackLength)) % 1;
     const currentTangent = curve.getTangentAt(this.progressU);
     const aheadTangent = curve.getTangentAt(lookaheadU);
     const angleDiff = currentTangent.angleTo(aheadTangent);
@@ -88,18 +90,18 @@ export class AIOpponent {
     // Accelerate or brake toward target speed
     if (this.currentSpeedMs < targetSpeed) {
       const accel = 11 * this.profile.accelFactor;
-      this.currentSpeedMs = Math.min(targetSpeed, this.currentSpeedMs + accel * delta);
+      this.currentSpeedMs = Math.min(targetSpeed, this.currentSpeedMs + accel * dt);
       this.model.brakeLightMaterial.emissiveIntensity = 0.5;
     } else {
       const brake = 16 * this.profile.brakeAggression;
-      this.currentSpeedMs = Math.max(targetSpeed, this.currentSpeedMs - brake * delta);
+      this.currentSpeedMs = Math.max(targetSpeed, this.currentSpeedMs - brake * dt);
       this.model.brakeLightMaterial.emissiveIntensity = 3.5;
     }
 
     this.speedKmh = Math.round(this.currentSpeedMs * 3.6);
 
     // 2. Collision avoidance & Overtaking AI logic
-    this.offsetChangeTimer -= delta;
+    this.offsetChangeTimer -= dt;
     if (this.offsetChangeTimer <= 0) {
       this.offsetChangeTimer = 2.0 + Math.random() * 2.0;
 
@@ -108,11 +110,11 @@ export class AIOpponent {
       const myPos = this.position;
 
       for (const otherPos of otherCarsPositions) {
-        if (otherPos === myPos) continue;
+        if (!otherPos || otherPos === myPos) continue;
         const dist = myPos.distanceTo(otherPos);
-        if (dist < 18) {
-          const toOther = otherPos.clone().sub(myPos);
-          if (toOther.dot(this.forward) > 0.6) {
+        if (dist < 18 && dist > 0.2) {
+          const toOther = otherPos.clone().sub(myPos).normalize();
+          if (toOther.dot(this.forward) > 0.5) {
             blockedAhead = true;
             break;
           }
@@ -128,12 +130,15 @@ export class AIOpponent {
       }
     }
 
-    this.lateralOffset = THREE.MathUtils.lerp(this.lateralOffset, this.targetOffset, delta * 2.0);
+    // Clamp lateral target to safe road width (-5.5 to +5.5 meters)
+    this.targetOffset = THREE.MathUtils.clamp(this.targetOffset, -5.5, 5.5);
+    this.lateralOffset = THREE.MathUtils.lerp(this.lateralOffset, this.targetOffset, dt * 2.0);
+    this.lateralOffset = THREE.MathUtils.clamp(this.lateralOffset, -5.8, 5.8);
 
     // 3. Advance spline progress
-    const moveDist = this.currentSpeedMs * delta;
+    const moveDist = this.currentSpeedMs * dt;
     this.totalDistance += moveDist;
-    const deltaU = moveDist / trackLength;
+    const deltaU = moveDist / Math.max(10, trackLength);
     const oldU = this.progressU;
     this.progressU = (this.progressU + deltaU) % 1;
 
@@ -143,10 +148,10 @@ export class AIOpponent {
     }
 
     // 4. Update 3D position and orientation
-    this.updatePositionOnSpline(curve, delta);
+    this.updatePositionOnSpline(curve, dt);
 
     // 5. Animate Wheels
-    const rollDelta = (this.currentSpeedMs * delta) / 0.38;
+    const rollDelta = (this.currentSpeedMs * dt) / 0.38;
     this.wheelSpin += rollDelta;
     const lHub = this.model.frontLeftWheel.children[0];
     const rHub = this.model.frontRightWheel.children[0];
@@ -167,7 +172,7 @@ export class AIOpponent {
 
     // Offset position across track width
     const targetPos = centerPoint.clone().addScaledVector(normal, this.lateralOffset);
-    targetPos.y += 0.05; // slight clearance
+    targetPos.y += 0.05; // slight clearance above asphalt
 
     this.position.copy(targetPos);
     this.group.position.copy(targetPos);
@@ -181,5 +186,23 @@ export class AIOpponent {
     } else {
       this.group.quaternion.copy(targetQuat);
     }
+  }
+
+  reset(startingU: number, startingOffset: number, curve: THREE.CatmullRomCurve3) {
+    this.progressU = Math.max(0, Math.min(1, startingU));
+    this.lateralOffset = startingOffset;
+    this.targetOffset = startingOffset;
+    this.lap = 1;
+    this.currentCheckpoint = 0;
+    this.totalDistance = 0;
+    this.currentSpeedMs = 0;
+    this.speedKmh = 0;
+    this.offsetChangeTimer = 0;
+    this.wheelSpin = 0;
+    this.updatePositionOnSpline(curve, 0);
+  }
+
+  dispose() {
+    this.model.materials.forEach(mat => mat.dispose());
   }
 }

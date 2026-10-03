@@ -104,6 +104,7 @@ src/
 ├── vite-env.d.ts             # Vite client declarations
 │
 ├── components/               # React UI & Overlay Components
+│   ├── ErrorBoundary.tsx     # React error boundary for crash recovery
 │   ├── RacingCanvas.tsx      # WebGL Canvas wrapper for Three.js
 │   ├── LoadingScreen.tsx     # Animated progress screen
 │   ├── MainMenu.tsx          # 3D Main Menu with motorsport identity

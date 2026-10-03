@@ -87,7 +87,7 @@ export class GameEngine {
       stencil: false,
     });
     this.renderer.setSize(width, height, false);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -133,7 +133,7 @@ export class GameEngine {
     };
 
     // 10. Spawn AI Opponents along the starting grid
-    this.spawnAI();
+    this.setupAI();
 
     // Set initial weather
     this.lightingSystem.applyWeather('SUNNY', 'DAY', this.scene);
@@ -141,13 +141,16 @@ export class GameEngine {
     // Listeners
     window.addEventListener('resize', this.onWindowResize);
 
-    // Start loop
+    // Start render/simulation loop
     this.startLoop();
   }
 
-  private spawnAI() {
-    // Remove any previous AI groups
-    this.aiOpponents.forEach(ai => this.scene.remove(ai.group));
+  private setupAI() {
+    // Clear any previous AI meshes
+    this.aiOpponents.forEach(ai => {
+      this.scene.remove(ai.group);
+      ai.dispose();
+    });
     this.aiOpponents = [];
 
     const curve = this.track.curve;
@@ -155,9 +158,9 @@ export class GameEngine {
 
     AI_ROSTER.slice(0, 6).forEach((driver, idx) => {
       // Staggered starting grid positions
-      const gridDist = (idx + 1) * 8.5; // distance behind or ahead
+      const gridDist = (idx + 1) * 8.5;
       const startU = (((1.0 - gridDist / trackLen) % 1.0) + 1.0) % 1.0;
-      const offset = (idx % 2 === 0 ? -3.5 : 3.5);
+      const offset = (idx % 2 === 0 ? -3.2 : 3.2);
 
       const ai = new AIOpponent(driver, startU, offset, curve);
       this.aiOpponents.push(ai);
@@ -166,9 +169,13 @@ export class GameEngine {
   }
 
   startRace(trackConfig: TrackConfig, gameMode: GameMode) {
-    audio.init();
-    audio.resume();
-    audio.startMusic();
+    try {
+      audio.init();
+      audio.resume();
+      audio.startMusic();
+    } catch (e) {
+      console.warn('Audio init warning:', e);
+    }
 
     this.raceManager.gameMode = gameMode;
     this.raceManager.totalLaps = trackConfig.totalLaps;
@@ -176,22 +183,46 @@ export class GameEngine {
     // Apply track weather & time of day
     this.lightingSystem.applyWeather(trackConfig.weather, trackConfig.timeOfDay, this.scene);
 
-    // Reset Player to starting grid
+    // Reset Player to starting grid box
     const startPt = this.track.curve.getPointAt(0);
-    startPt.x += 1.5; // Grid box position
+    startPt.x += 1.5; // Staggered grid slot
     const startTangent = this.track.curve.getTangentAt(0).normalize();
     const rotY = Math.atan2(startTangent.x, startTangent.z);
     this.playerVehicle.reset(startPt, rotY);
 
-    // Respawn AI
+    // Reset or respawn AI opponents
     if (gameMode !== 'TIME_TRIAL' && gameMode !== 'FREE_DRIVE') {
-      this.spawnAI();
+      const curve = this.track.curve;
+      const trackLen = this.track.trackLength;
+
+      if (this.aiOpponents.length === 6) {
+        // Reuse existing AI opponents without destroying/recreating 3D models (Req 28)
+        this.aiOpponents.forEach((ai, idx) => {
+          const gridDist = (idx + 1) * 8.5;
+          const startU = (((1.0 - gridDist / trackLen) % 1.0) + 1.0) % 1.0;
+          const offset = (idx % 2 === 0 ? -3.2 : 3.2);
+          ai.reset(startU, offset, curve);
+        });
+      } else {
+        this.setupAI();
+      }
     } else {
-      this.aiOpponents.forEach(ai => this.scene.remove(ai.group));
+      this.aiOpponents.forEach(ai => {
+        this.scene.remove(ai.group);
+        ai.dispose();
+      });
       this.aiOpponents = [];
     }
 
+    // Reset Particle and Skidmark Systems (Req 28)
+    this.particles.reset();
+    this.skidMarks.reset();
+    this.collisionCooldown = 0;
+
+    // Reset race manager & start countdown
     this.raceManager.startCountdown();
+
+    // Snap Camera to fresh chase mode
     this.cameraSystem.setMode('CHASE');
     this.cameraSystem.snapToVehicle(this.playerVehicle);
     this.onStateChange?.('COUNTDOWN');
@@ -201,13 +232,16 @@ export class GameEngine {
     this.customization = customization;
     const stats = calculateCarStats(customization);
 
-    // Rebuild player vehicle with new paint/tuning
+    // Rebuild player vehicle with new paint/materials/tuning
     this.scene.remove(this.playerVehicle.group);
+    this.playerVehicle.dispose();
+
     const currPos = this.playerVehicle.physics.position.clone();
     const currQuat = this.playerVehicle.physics.quaternion.clone();
 
     this.playerVehicle = new Vehicle(customization, stats, currPos, 0);
     this.playerVehicle.physics.quaternion.copy(currQuat);
+    this.playerVehicle.physics.updateStats(stats);
     this.scene.add(this.playerVehicle.group);
   }
 
@@ -215,8 +249,7 @@ export class GameEngine {
     if (!this.canvas) return;
     const width = this.canvas.clientWidth || window.innerWidth;
     const height = this.canvas.clientHeight || window.innerHeight;
-    this.cameraSystem.camera.aspect = width / height;
-    this.cameraSystem.camera.updateProjectionMatrix();
+    this.cameraSystem.updateAspect(width / height);
     this.renderer.setSize(width, height, false);
   };
 
@@ -244,14 +277,18 @@ export class GameEngine {
       this.collisionCooldown -= delta;
     }
 
+    // When paused: stop simulation, AI, physics, timers, but UI & camera can render (Req 6)
     if (state === 'PAUSED') {
+      audio.setTireSqueal(0);
+      audio.setBoostActive(false);
       return;
     }
 
     if (state === 'MENU' || state === 'GARAGE') {
       // Menu showcase camera orbiting car
       this.cameraSystem.updateMenuCamera(this.playerVehicle.physics.position, elapsed);
-      // Wheels slowly spinning in showroom
+      audio.setTireSqueal(0);
+      audio.setBoostActive(false);
       return;
     }
 
@@ -305,14 +342,14 @@ export class GameEngine {
 
     // 6. Particle & Skid Marks Emitters
     if (this.settings.particles) {
-      // Tire Smoke on drift
+      const carPos = this.playerVehicle.physics.position;
+      const carVel = this.playerVehicle.physics.velocity;
+
+      // Tire Smoke & Skid Marks on drift
       if (this.playerVehicle.physics.isDrifting) {
-        const carPos = this.playerVehicle.physics.position;
-        const carVel = this.playerVehicle.physics.velocity;
         this.particles.emitTireSmoke(carPos, carVel);
         this.particles.emitSparks(carPos);
 
-        // Add skid marks
         const leftTire = carPos.clone().add(new THREE.Vector3(-0.9, 0, -1.3).applyQuaternion(this.playerVehicle.physics.quaternion));
         const rightTire = carPos.clone().add(new THREE.Vector3(0.9, 0, -1.3).applyQuaternion(this.playerVehicle.physics.quaternion));
         this.skidMarks.addSkidMarks(leftTire, rightTire);
@@ -325,6 +362,8 @@ export class GameEngine {
         const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(this.playerVehicle.physics.quaternion);
         const exhL = this.playerVehicle.model.exhaustLeft.clone().applyQuaternion(this.playerVehicle.physics.quaternion).add(this.playerVehicle.physics.position);
         const exhR = this.playerVehicle.model.exhaustRight.clone().applyQuaternion(this.playerVehicle.physics.quaternion).add(this.playerVehicle.physics.position);
+        this.particles.emitBoost(exhL, forward);
+        this.particles.emitBoost(exhR, forward);
         this.particles.emitExhaustFlame(exhL, forward);
         this.particles.emitExhaustFlame(exhR, forward);
         audio.setBoostActive(true);
@@ -339,19 +378,19 @@ export class GameEngine {
     // 7. Lighting & Weather
     this.lightingSystem.update(delta, this.playerVehicle.physics.position, this.lightingSystem.rainParticles?.visible ?? false);
 
-    // 8. Stream Telemetry to React HUD (throttled to 20 FPS to prevent React render thrashing)
+    // 8. Stream Telemetry to React HUD (throttled to 20 FPS to prevent render thrashing)
     this.telemetryTimer += delta;
     if (this.telemetryTimer >= 0.05) {
       this.telemetryTimer = 0;
       if (this.onTelemetryUpdate && (state === 'COUNTDOWN' || state === 'RACING' || state === 'FINISHED')) {
         const currentCp = this.track.checkpoints[this.raceManager.currentCheckpointIndex];
         this.onTelemetryUpdate({
-          speedKmh: this.playerVehicle.physics.speedKmh,
-          rpm: Math.round(this.playerVehicle.physics.engineRpm),
+          speedKmh: Math.max(0, this.playerVehicle.physics.speedKmh),
+          rpm: Math.max(0, Math.round(this.playerVehicle.physics.engineRpm)),
           gear: this.playerVehicle.physics.gear,
-          boost: Math.round(this.playerVehicle.physics.boostAmount),
-          fuel: Math.round(this.playerVehicle.physics.fuelAmount),
-          damage: Math.round(this.playerVehicle.physics.damage),
+          boost: Math.max(0, Math.min(100, Math.round(this.playerVehicle.physics.boostAmount))),
+          fuel: Math.max(0, Math.min(100, Math.round(this.playerVehicle.physics.fuelAmount))),
+          damage: Math.max(0, Math.min(100, Math.round(this.playerVehicle.physics.damage))),
           lap: this.raceManager.currentLap,
           totalLaps: this.raceManager.totalLaps,
           position: this.raceManager.playerPosition,
@@ -405,12 +444,13 @@ export class GameEngine {
       }
     }
 
-    // 3. Keep player car smoothly following road elevation
-    playerPos.y = THREE.MathUtils.lerp(playerPos.y, bestPt.y + 0.02, Math.min(1.0, delta * 25));
+    // 3. Keep player car smoothly following road elevation (Req 10: player must not fall through road)
+    const roadY = bestPt.y + 0.04;
+    playerPos.y = THREE.MathUtils.lerp(playerPos.y, roadY, Math.min(1.0, delta * 25));
 
     // 4. Guardrail barrier collision (road is ~17m wide, halfWidth = 8.5m)
     const trackHalfWidth = 8.2;
-    if (min2DDist > trackHalfWidth && min2DDist < 28) {
+    if (min2DDist > trackHalfWidth && min2DDist < 30) {
       // 2D horizontal vector pointing from car toward track center
       const nx = bestPt.x - px;
       const nz = bestPt.z - pz;
@@ -427,7 +467,6 @@ export class GameEngine {
       const normalDotVel = vel.x * dirX + vel.z * dirZ;
 
       if (normalDotVel < 0) {
-        // Cancel the velocity directed outside into the barrier
         vel.x -= normalDotVel * dirX;
         vel.z -= normalDotVel * dirZ;
         vel.multiplyScalar(0.9);
@@ -453,10 +492,19 @@ export class GameEngine {
     this.isDestroyed = true;
     if (this.animationFrameId) {
       cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
     }
     window.removeEventListener('resize', this.onWindowResize);
     this.input.destroy();
     audio.stopMusic();
+    audio.setTireSqueal(0);
+    audio.setBoostActive(false);
+
+    this.particles.dispose();
+    this.skidMarks.dispose();
+    this.playerVehicle.dispose();
+    this.aiOpponents.forEach(ai => ai.dispose());
+
     this.renderer.dispose();
   }
 }

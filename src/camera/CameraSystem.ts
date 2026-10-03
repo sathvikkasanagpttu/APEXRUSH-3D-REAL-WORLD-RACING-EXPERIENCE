@@ -12,7 +12,8 @@ export class CameraSystem {
   private shakeIntensity = 0;
 
   constructor(aspect: number) {
-    this.camera = new THREE.PerspectiveCamera(this.baseFov, aspect, 0.1, 1000);
+    const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 16 / 9;
+    this.camera = new THREE.PerspectiveCamera(this.baseFov, safeAspect, 0.1, 1000);
     this.currentCamPos.set(0, 5, -10);
     this.camera.position.copy(this.currentCamPos);
   }
@@ -28,19 +29,32 @@ export class CameraSystem {
   }
 
   addShake(amount: number) {
-    this.shakeIntensity = Math.min(1.0, this.shakeIntensity + amount);
+    this.shakeIntensity = Math.min(1.0, this.shakeIntensity + Math.max(0, amount));
+  }
+
+  updateAspect(aspect: number) {
+    if (Number.isFinite(aspect) && aspect > 0) {
+      this.camera.aspect = aspect;
+      this.camera.updateProjectionMatrix();
+    }
   }
 
   update(delta: number, playerVehicle: Vehicle, elapsed: number, enableShake = true) {
+    const dt = Math.max(0.001, Math.min(delta, 0.05));
     const carPos = playerVehicle.physics.position;
     const carQuat = playerVehicle.physics.quaternion;
-    const carSpeedKmh = playerVehicle.physics.speedKmh;
+    const carSpeedKmh = Math.max(0, playerVehicle.physics.speedKmh);
     const isBoosting = playerVehicle.physics.isBoosting;
+
+    // Safety checks against NaN in car transforms
+    if (!Number.isFinite(carPos.x) || !Number.isFinite(carPos.y) || !Number.isFinite(carPos.z)) {
+      return;
+    }
 
     // Speed-based dynamic FOV
     const speedRatio = Math.min(1.0, carSpeedKmh / 260);
     const targetFov = this.baseFov + speedRatio * 12 + (isBoosting ? 8 : 0);
-    this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, targetFov, delta * 5);
+    this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, targetFov, dt * 5);
     this.camera.updateProjectionMatrix();
 
     // Camera vectors from car orientation
@@ -112,26 +126,31 @@ export class CameraSystem {
     }
 
     // Camera shake calculation (engine rumble + drift + collisions)
-    let shakeOffset = new THREE.Vector3();
+    const shakeOffset = new THREE.Vector3();
     if (enableShake && (this.shakeIntensity > 0.01 || carSpeedKmh > 80)) {
-      const shakeMag = (this.shakeIntensity * 0.4) + (carSpeedKmh / 260) * 0.04;
+      const shakeMag = Math.min(0.35, (this.shakeIntensity * 0.35) + (carSpeedKmh / 260) * 0.035);
       shakeOffset.set(
         (Math.sin(elapsed * 45) + Math.cos(elapsed * 32)) * shakeMag,
         (Math.sin(elapsed * 38) + Math.cos(elapsed * 50)) * shakeMag * 0.6,
         0
       );
-      this.shakeIntensity = Math.max(0, this.shakeIntensity - delta * 2.5);
+      this.shakeIntensity = Math.max(0, this.shakeIntensity - dt * 2.5);
     }
 
     // Smoothly interpolate position and lookAt
-    this.currentCamPos.lerp(desiredPos, Math.min(1.0, delta * followLerp));
-    this.currentTarget.lerp(lookTarget, Math.min(1.0, delta * followLerp));
-
-    this.camera.position.copy(this.currentCamPos).add(shakeOffset);
-    this.camera.lookAt(this.currentTarget);
+    if (Number.isFinite(desiredPos.x) && Number.isFinite(lookTarget.x)) {
+      this.currentCamPos.lerp(desiredPos, Math.min(1.0, dt * followLerp));
+      this.currentTarget.lerp(lookTarget, Math.min(1.0, dt * followLerp));
+      this.camera.position.copy(this.currentCamPos).add(shakeOffset);
+      this.camera.lookAt(this.currentTarget);
+    }
   }
 
   updateMenuCamera(carPos: THREE.Vector3, elapsed: number) {
+    if (!Number.isFinite(carPos.x) || !Number.isFinite(carPos.y) || !Number.isFinite(carPos.z)) {
+      return;
+    }
+
     // Elegant rotating showcase camera for 3D Main Menu & Garage
     const radius = 7.5;
     const height = 2.2 + Math.sin(elapsed * 0.5) * 0.5;
@@ -150,6 +169,8 @@ export class CameraSystem {
   snapToVehicle(playerVehicle: Vehicle) {
     const carPos = playerVehicle.physics.position;
     const carQuat = playerVehicle.physics.quaternion;
+    if (!Number.isFinite(carPos.x)) return;
+
     const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(carQuat).normalize();
     const up = new THREE.Vector3(0, 1, 0);
 
